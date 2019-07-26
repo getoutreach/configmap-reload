@@ -30,10 +30,10 @@ var (
 	webhookStatusCode = flag.Int("webhook-status-code", 200, "the HTTP status code indicating successful triggering of reload")
 	listenAddress     = flag.String("web.listen-address", ":9533", "Address to listen on for web interface and telemetry.")
 	metricPath        = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
-	secretPath        = flag.String("secretPath", "", "YAML file containing to be passed as go-template values")
-	templateFile      = flag.String("templateFile", "", "Template file to render, relative to the volume dir")
-	outputVolumeDir   = flag.String("outputDir", "", "Output directory for processed templates")
-	useEnv            = flag.Bool("useEnv", false, "When set to true, will use env vars instead of a secret file")
+	secretPath        = flag.String("secret-path", "", "YAML file containing to be passed as go-template values")
+	templateFile      = flag.String("template-file", "", "Template file to render, relative to the volume dir")
+	outputVolumeDir   = flag.String("output-dir", "", "Output directory for processed templates")
+	useEnv            = flag.Bool("use-env", false, "When set to true, will use env vars instead of a secret file")
 
 	lastReloadError = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace,
