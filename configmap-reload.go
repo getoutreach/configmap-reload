@@ -144,14 +144,12 @@ func generateNewConf(templatePath string) (string, error) {
 	}
 
 	log.Printf("rendering file '%s'", templatePath)
-
-	t := template.New("conf")
-
 	b, err := ioutil.ReadFile(templatePath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read file: %v", err)
 	}
 
+	t := template.New("conf")
 	tmpl, err := t.Parse(string(b))
 	if err != nil {
 		return "", fmt.Errorf("failed to create template: %v", err)
