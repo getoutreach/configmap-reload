@@ -67,6 +67,55 @@ var (
 	}, []string{"webhook", "status_code"})
 )
 
+// Secret is an interface to secret providers
+type Secret interface {
+	Get() (interface{}, error)
+}
+
+// YAMLFileSecret is a YAML file secret interface
+type YAMLFileSecret struct {
+	file string
+}
+
+// NewYAMLFileSecret returns a new yaml file backed secret interface
+func NewYAMLFileSecret(file string) *YAMLFileSecret {
+	return &YAMLFileSecret{file}
+}
+
+// Get returns an interface{} of the contents of a yaml file
+func (*YAMLFileSecret) Get() (interface{}, error) {
+	var inf interface{}
+	b, err := ioutil.ReadFile(*secretPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read secret file: %v", err)
+	}
+
+	if err := yaml.Unmarshal(b, &inf); err != nil {
+		return "", fmt.Errorf("failed to unmarshall secret file: %v", err)
+	}
+	return inf, nil
+}
+
+// EnvSecret is a env secret interface
+type EnvSecret struct{}
+
+// NewEnvSecret returns a new env backed secret interface
+// env should be the same format as os.Environ
+func NewEnvSecret(env []string) *EnvSecret {
+	return &EnvSecret{}
+}
+
+// Get returns a map[string]string of key value pair of the env vars
+func (*EnvSecret) Get() (interface{}, error) {
+	keys := make(map[string]string)
+	for _, v := range os.Environ() {
+		splits := strings.SplitN(v, "=", 2)
+		// set KEY=VALUE supporting = in value
+		keys[splits[0]] = splits[1]
+	}
+	return keys, nil
+}
+
 func init() {
 	prometheus.MustRegister(lastReloadError)
 	prometheus.MustRegister(requestDuration)
@@ -108,26 +157,17 @@ func generateNewConf(templatePath string) (string, error) {
 		return "", fmt.Errorf("failed to create template: %v", err)
 	}
 
-	var inf interface{}
+	var secret Secret
 
 	if *useEnv {
-		keys := make(map[string]string)
-		for _, v := range os.Environ() {
-			splits := strings.SplitN(v, "=", 2)
-			// set KEY=VALUE supporting = in value
-			keys[splits[0]] = splits[1]
-			log.Printf("set %s=%v", splits[0], keys[splits[0]])
-		}
-		inf = keys
+		secret = NewEnvSecret(os.Environ())
 	} else {
-		b, err = ioutil.ReadFile(*secretPath)
-		if err != nil {
-			return "", fmt.Errorf("failed to read secret file: %v", err)
-		}
+		secret = NewYAMLFileSecret(*secretPath)
+	}
 
-		if err := yaml.Unmarshal(b, &inf); err != nil {
-			return "", fmt.Errorf("failed to unmarshall secret file: %v", err)
-		}
+	inf, err := secret.Get()
+	if err != nil {
+		return "", fmt.Errorf("failed to get secret information: %v", err)
 	}
 
 	var resp bytes.Buffer
