@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"text/template"
 	"time"
 
@@ -32,6 +33,7 @@ var (
 	secretPath        = flag.String("secretPath", "", "YAML file containing to be passed as go-template values")
 	templateFile      = flag.String("templateFile", "", "Template file to render, relative to the volume dir")
 	outputVolumeDir   = flag.String("outputDir", "", "Output directory for processed templates")
+	useEnv            = flag.Bool("useEnv", false, "When set to true, will use env vars instead of a secret file")
 
 	lastReloadError = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace,
@@ -107,14 +109,26 @@ func generateNewConf(templatePath string) (string, error) {
 	}
 
 	var inf interface{}
-	b, err = ioutil.ReadFile(*secretPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to read secret file: %v", err)
-	}
 
-	err = yaml.Unmarshal(b, &inf)
-	if err != nil {
-		return "", fmt.Errorf("failed to unmarshall secret file: %v", err)
+	if *useEnv {
+		keys := make(map[string]string)
+		for _, v := range os.Environ() {
+			splits := strings.SplitN(v, "=", 2)
+			// set KEY=VALUE supporting = in value
+			keys[splits[0]] = splits[1]
+			log.Printf("set %s=%v", splits[0], keys[splits[0]])
+		}
+		inf = keys
+	} else {
+		b, err = ioutil.ReadFile(*secretPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to read secret file: %v", err)
+		}
+
+		err = yaml.Unmarshal(b, &inf)
+		if err != nil {
+			return "", fmt.Errorf("failed to unmarshall secret file: %v", err)
+		}
 	}
 
 	var resp bytes.Buffer
@@ -185,8 +199,15 @@ func main() {
 	}
 
 	// why template without secrets?
-	if *templateFile != "" && *secretPath == "" {
+	if *templateFile != "" && *secretPath == "" && !*useEnv {
 		log.Println("secretPath must be set when using templateFile")
+		log.Println()
+		flag.Usage()
+		os.Exit(1)
+	}
+
+	if *secretPath != "" && *useEnv {
+		log.Println("secretPath can't be set when useEnv is set")
 		log.Println()
 		flag.Usage()
 		os.Exit(1)
@@ -300,7 +321,7 @@ func setSuccessMetrics(h string, begun time.Time) {
 
 func isValidEvent(event fsnotify.Event) bool {
 	// for testing, have this return true
-	return true
+	// return true
 	if event.Op&fsnotify.Create != fsnotify.Create {
 		return false
 	}
