@@ -1,19 +1,23 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"text/template"
 	"time"
 
 	fsnotify "github.com/fsnotify/fsnotify"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"gopkg.in/yaml.v2"
 )
 
 const namespace = "configmap_reload"
@@ -25,6 +29,9 @@ var (
 	webhookStatusCode = flag.Int("webhook-status-code", 200, "the HTTP status code indicating successful triggering of reload")
 	listenAddress     = flag.String("web.listen-address", ":9533", "Address to listen on for web interface and telemetry.")
 	metricPath        = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
+	secretPath        = flag.String("secretPath", "", "YAML file containing to be passed as go-template values")
+	templateFile      = flag.String("templateFile", "", "Template file to render, relative to the volume dir")
+	outputVolumeDir   = flag.String("outputDir", "", "Output directory for processed templates")
 
 	lastReloadError = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace,
@@ -67,6 +74,97 @@ func init() {
 	prometheus.MustRegister(requestsByStatusCode)
 }
 
+// generateNewConf returns a fully rendered configuration file with support
+// for golang templating
+func generateNewConf(templatePath string) (string, error) {
+	rel, err := filepath.Rel(volumeDirs[0], templatePath)
+	if err != nil {
+		return "", err
+	}
+
+	// if it's not the template file we want, then we just return the raw contents
+	// this also doubles as not running without a template file being set.
+	if rel != *templateFile {
+		b, err := ioutil.ReadFile(templatePath)
+		if err != nil {
+			return "", fmt.Errorf("failed to read file: %v", err)
+		}
+		return string(b), nil
+	}
+
+	log.Printf("rendering file '%s'", templatePath)
+
+	t := template.New("conf")
+
+	b, err := ioutil.ReadFile(templatePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read file: %v", err)
+	}
+
+	tmpl, err := t.Parse(string(b))
+	if err != nil {
+		return "", fmt.Errorf("failed to create template: %v", err)
+	}
+
+	var inf interface{}
+	b, err = ioutil.ReadFile(*secretPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read secret file: %v", err)
+	}
+
+	err = yaml.Unmarshal(b, &inf)
+	if err != nil {
+		return "", fmt.Errorf("failed to unmarshall secret file: %v", err)
+	}
+
+	var resp bytes.Buffer
+	err = tmpl.Execute(&resp, inf)
+	if err != nil {
+		return "", fmt.Errorf("failed to render template: %v", err)
+	}
+	return resp.String(), nil
+}
+
+// renderConfigs renders all configuration files
+func renderConfigs() error {
+	f, err := ioutil.ReadDir(*outputVolumeDir)
+	if err != nil {
+		return fmt.Errorf("failed to read outputVolumeDir: %v", err)
+	}
+
+	for _, o := range f {
+		absPath := filepath.Join(*outputVolumeDir, o.Name())
+		log.Println("cleaning up output dir", absPath)
+		err := os.RemoveAll(absPath)
+		if err != nil {
+			log.Printf("WARN: failed to cleanup outputVolumeDir: %v", err)
+		}
+	}
+
+	err = filepath.Walk(volumeDirs[0], func(path string, info os.FileInfo, err error) error {
+		if info.IsDir() {
+			log.Println("skipping dir", path)
+			return nil
+		}
+
+		s, err := generateNewConf(path)
+		if err != nil {
+			return err
+		}
+
+		rel, err := filepath.Rel(volumeDirs[0], path)
+		if err != nil {
+			return err
+		}
+
+		savePath := filepath.Join(*outputVolumeDir, rel)
+
+		err = ioutil.WriteFile(savePath, []byte(s), info.Mode())
+		return err
+	})
+	return err
+}
+
 func main() {
 	flag.Var(&volumeDirs, "volume-dir", "the config map volume directory to watch for updates; may be used multiple times")
 	flag.Var(&webhook, "webhook-url", "the url to send a request to when the specified config map volume directory has been updated")
@@ -86,20 +184,61 @@ func main() {
 		os.Exit(1)
 	}
 
+	// why template without secrets?
+	if *templateFile != "" && *secretPath == "" {
+		log.Println("secretPath must be set when using templateFile")
+		log.Println()
+		flag.Usage()
+		os.Exit(1)
+	}
+
+	// only support output volumes in templateFile mode
+	if *outputVolumeDir != "" && *templateFile == "" {
+		log.Println("outputVolumeDir is only support when in templating mode")
+		log.Println()
+		flag.Usage()
+		os.Exit(1)
+	}
+
+	// can only output to one dir, so only support one dir
+	if *outputVolumeDir != "" && len(volumeDirs) > 1 {
+		log.Println("only one volumeDir can be set when outputVolumeDir is set")
+		log.Println()
+		flag.Usage()
+		os.Exit(1)
+	}
+
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer watcher.Close()
 
+	if *outputVolumeDir != "" {
+		err = os.MkdirAll(*outputVolumeDir, 0777)
+		if err != nil {
+			log.Fatalf("failed to ensure outputVolumeDir existed: %v", err)
+		}
+	}
+
+	renderConfigs()
+
 	go func() {
 		for {
 			select {
 			case event := <-watcher.Events:
 				if !isValidEvent(event) {
+					log.Printf("skipping invalid event: %v", event)
 					continue
 				}
 				log.Println("config map updated")
+
+				err := renderConfigs()
+				if err != nil {
+					log.Printf("ERROR: failed to render configuration: %v", err)
+					continue
+				}
+
 				for _, h := range webhook {
 					begun := time.Now()
 					req, err := http.NewRequest(*webhookMethod, h.String(), nil)
@@ -127,7 +266,7 @@ func main() {
 						log.Println("error:", "Received response code", resp.StatusCode, ", expected", *webhookStatusCode)
 						continue
 					}
-					setSuccessMetrict(h.String(), begun)
+					setSuccessMetrics(h.String(), begun)
 					log.Println("successfully triggered reload")
 				}
 			case err := <-watcher.Errors:
@@ -138,7 +277,7 @@ func main() {
 	}()
 
 	for _, d := range volumeDirs {
-		log.Printf("Watching directory: %q", d)
+		log.Printf("Watching directory: '%s'", d)
 		err = watcher.Add(d)
 		if err != nil {
 			log.Fatal(err)
@@ -153,13 +292,15 @@ func setFailureMetrics(h, reason string) {
 	lastReloadError.WithLabelValues(h).Set(1.0)
 }
 
-func setSuccessMetrict(h string, begun time.Time) {
+func setSuccessMetrics(h string, begun time.Time) {
 	requestDuration.WithLabelValues(h).Set(time.Since(begun).Seconds())
 	successReloads.WithLabelValues(h).Inc()
 	lastReloadError.WithLabelValues(h).Set(0.0)
 }
 
 func isValidEvent(event fsnotify.Event) bool {
+	// for testing, have this return true
+	return true
 	if event.Op&fsnotify.Create != fsnotify.Create {
 		return false
 	}
