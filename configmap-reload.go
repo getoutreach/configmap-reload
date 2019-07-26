@@ -125,15 +125,13 @@ func generateNewConf(templatePath string) (string, error) {
 			return "", fmt.Errorf("failed to read secret file: %v", err)
 		}
 
-		err = yaml.Unmarshal(b, &inf)
-		if err != nil {
+		if err := yaml.Unmarshal(b, &inf); err != nil {
 			return "", fmt.Errorf("failed to unmarshall secret file: %v", err)
 		}
 	}
 
 	var resp bytes.Buffer
-	err = tmpl.Execute(&resp, inf)
-	if err != nil {
+	if err := tmpl.Execute(&resp, inf); err != nil {
 		return "", fmt.Errorf("failed to render template: %v", err)
 	}
 	return resp.String(), nil
@@ -156,6 +154,11 @@ func renderConfigs() error {
 	}
 
 	err = filepath.Walk(volumeDirs[0], func(path string, info os.FileInfo, err error) error {
+		// failed to access the file, or some other unworkaroundable error
+		if err != nil {
+			return err
+		}
+
 		if info.IsDir() {
 			log.Println("skipping dir", path)
 			return nil
@@ -236,8 +239,7 @@ func main() {
 	defer watcher.Close()
 
 	if *outputVolumeDir != "" {
-		err = os.MkdirAll(*outputVolumeDir, 0777)
-		if err != nil {
+		if err := os.MkdirAll(*outputVolumeDir, 0777); err != nil {
 			log.Fatalf("failed to ensure outputVolumeDir existed: %v", err)
 		}
 	}
@@ -299,8 +301,7 @@ func main() {
 
 	for _, d := range volumeDirs {
 		log.Printf("Watching directory: '%s'", d)
-		err = watcher.Add(d)
-		if err != nil {
+		if err = watcher.Add(d); err != nil {
 			log.Fatal(err)
 		}
 	}
