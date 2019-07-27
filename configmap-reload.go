@@ -127,8 +127,8 @@ func init() {
 
 // generateNewConf returns a fully rendered configuration file with support
 // for golang templating
-func generateNewConf(templatePath string) (string, error) {
-	rel, err := filepath.Rel(volumeDirs[0], templatePath)
+func generateNewConf(volumeDir, secretPath, templatePath string) (string, error) {
+	rel, err := filepath.Rel(volumeDir, templatePath)
 	if err != nil {
 		return "", err
 	}
@@ -160,7 +160,7 @@ func generateNewConf(templatePath string) (string, error) {
 	if *useEnv {
 		secret = NewEnvSecret(os.Environ())
 	} else {
-		secret = NewYAMLFileSecret(*secretPath)
+		secret = NewYAMLFileSecret(secretPath)
 	}
 
 	inf, err := secret.Get()
@@ -176,14 +176,14 @@ func generateNewConf(templatePath string) (string, error) {
 }
 
 // renderConfigs renders all configuration files
-func renderConfigs() error {
-	f, err := ioutil.ReadDir(*outputVolumeDir)
+func renderConfigs(outputVolumeDir, volumeDir, secretPath string) error {
+	f, err := ioutil.ReadDir(outputVolumeDir)
 	if err != nil {
 		return fmt.Errorf("failed to read outputVolumeDir: %v", err)
 	}
 
 	for _, o := range f {
-		absPath := filepath.Join(*outputVolumeDir, o.Name())
+		absPath := filepath.Join(outputVolumeDir, o.Name())
 		log.Println("cleaning up output dir", absPath)
 		err := os.RemoveAll(absPath)
 		if err != nil {
@@ -202,7 +202,7 @@ func renderConfigs() error {
 			return nil
 		}
 
-		s, err := generateNewConf(path)
+		s, err := generateNewConf(volumeDir, secretPath, path)
 		if err != nil {
 			return err
 		}
@@ -212,7 +212,7 @@ func renderConfigs() error {
 			return err
 		}
 
-		savePath := filepath.Join(*outputVolumeDir, rel)
+		savePath := filepath.Join(outputVolumeDir, rel)
 
 		err = ioutil.WriteFile(savePath, []byte(s), info.Mode())
 		return err
@@ -282,7 +282,9 @@ func main() {
 		}
 	}
 
-	renderConfigs()
+	if err := renderConfigs(*outputVolumeDir, volumeDirs[0], *secretPath); err != nil {
+		log.Fatalf("failed to render configs: %v", err)
+	}
 
 	go func() {
 		for {
@@ -294,7 +296,7 @@ func main() {
 				}
 				log.Println("config map updated")
 
-				err := renderConfigs()
+				err := renderConfigs(*outputVolumeDir, volumeDirs[0], *secretPath)
 				if err != nil {
 					log.Printf("ERROR: failed to render configuration: %v", err)
 					continue
