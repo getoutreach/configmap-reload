@@ -79,13 +79,13 @@ type YAMLFileSecret struct {
 
 // NewYAMLFileSecret returns a new yaml file backed secret interface
 func NewYAMLFileSecret(file string) *YAMLFileSecret {
-	return &YAMLFileSecret{file}
+	return &YAMLFileSecret{file: file}
 }
 
 // Get returns an interface{} of the contents of a yaml file
-func (*YAMLFileSecret) Get() (interface{}, error) {
+func (y *YAMLFileSecret) Get() (interface{}, error) {
 	var inf interface{}
-	b, err := ioutil.ReadFile(*secretPath)
+	b, err := ioutil.ReadFile(y.file)
 	if err != nil {
 		return "", fmt.Errorf("failed to read secret file: %v", err)
 	}
@@ -106,7 +106,7 @@ func NewEnvSecret(env []string) *EnvSecret {
 }
 
 // Get returns a map[string]string of key value pair of the env vars
-func (*EnvSecret) Get() (interface{}, error) {
+func (e *EnvSecret) Get() (interface{}, error) {
 	keys := make(map[string]string)
 	for _, v := range os.Environ() {
 		splits := strings.SplitN(v, "=", 2)
