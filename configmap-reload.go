@@ -127,27 +127,24 @@ func init() {
 
 // generateNewConf returns a fully rendered configuration file with support
 // for golang templating
-func generateNewConf(volumeDir, secretPath, templatePath string) (string, error) {
+func generateNewConf(volumeDir, secretPath string, info os.FileInfo, templatePath string) (string, error) {
 	rel, err := filepath.Rel(volumeDir, templatePath)
 	if err != nil {
 		return "", err
 	}
 
-	// if it's not the template file we want, then we just return the raw contents
-	// this also doubles as not running without a template file being set.
-	if rel != *templateFile {
-		b, err := ioutil.ReadFile(templatePath)
-		if err != nil {
-			return "", fmt.Errorf("failed to read file: %v", err)
-		}
-		return string(b), nil
-	}
-
-	log.Printf("rendering file '%s'", templatePath)
 	b, err := ioutil.ReadFile(templatePath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read file: %v", err)
 	}
+
+	// if it's not the template file we want, then we just return the raw contents
+	// this also doubles as not running without a template file being set.
+	if rel != *templateFile {
+		return string(b), nil
+	}
+
+	log.Printf("rendering file '%s'", templatePath)
 
 	t := template.New("conf")
 	tmpl, err := t.Parse(string(b))
@@ -191,28 +188,52 @@ func renderConfigs(outputVolumeDir, volumeDir, secretPath string) error {
 		}
 	}
 
-	err = filepath.Walk(volumeDirs[0], func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk(volumeDir, func(path string, info os.FileInfo, err error) error {
 		// failed to access the file, or some other unworkaroundable error
 		if err != nil {
-			return err
+			return fmt.Errorf("walk err: %s", err)
+		}
+
+		// support symbolic links
+		if info.Mode()&os.ModeSymlink != 0 {
+			link, err := os.Readlink(path)
+			if err != nil {
+				return fmt.Errorf("failed to resolve symlink: %v", err)
+			}
+
+			// best guess make it absolute from the current dir
+			if !filepath.IsAbs(link) {
+				link = filepath.Join(filepath.Dir(path), link)
+			}
+
+			log.Printf("resolved symlink '%s' -> '%s'", path, link)
+			info, err = os.Lstat(link)
+			if err != nil {
+				return fmt.Errorf("failed to lstat symlink: %v", err)
+			}
+
+			path = link
 		}
 
 		if info.IsDir() {
-			log.Println("skipping dir", path)
 			return nil
 		}
 
-		s, err := generateNewConf(volumeDir, secretPath, path)
+		s, err := generateNewConf(volumeDir, secretPath, info, path)
 		if err != nil {
 			return err
 		}
 
-		rel, err := filepath.Rel(volumeDirs[0], path)
+		rel, err := filepath.Rel(volumeDir, path)
 		if err != nil {
 			return err
 		}
 
 		savePath := filepath.Join(outputVolumeDir, rel)
+
+		if err := os.MkdirAll(filepath.Dir(savePath), 0777); err != nil {
+			return fmt.Errorf("failed to mkdir for savepath: %v", err)
+		}
 
 		err = ioutil.WriteFile(savePath, []byte(s), info.Mode())
 		return err
