@@ -16,6 +16,7 @@ import (
 	"time"
 
 	fsnotify "github.com/fsnotify/fsnotify"
+	"github.com/getoutreach/configmap-reload/pkg/filepathext"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"gopkg.in/yaml.v2"
@@ -188,34 +189,14 @@ func renderConfigs(outputVolumeDir, volumeDir, secretPath string) error {
 		}
 	}
 
-	err = filepath.Walk(volumeDir, func(path string, info os.FileInfo, err error) error {
+	err = filepathext.SymWalk(volumeDir, func(path string, info os.FileInfo, err error) error {
 		// failed to access the file, or some other unworkaroundable error
 		if err != nil {
 			return fmt.Errorf("walk err: %s", err)
 		}
 
-		// support symbolic links
-		if info.Mode()&os.ModeSymlink != 0 {
-			link, err := os.Readlink(path)
-			if err != nil {
-				return fmt.Errorf("failed to resolve symlink: %v", err)
-			}
-
-			// best guess make it absolute from the current dir
-			if !filepath.IsAbs(link) {
-				link = filepath.Join(filepath.Dir(path), link)
-			}
-
-			log.Printf("resolved symlink '%s' -> '%s'", path, link)
-			info, err = os.Lstat(link)
-			if err != nil {
-				return fmt.Errorf("failed to lstat symlink: %v", err)
-			}
-
-			path = link
-		}
-
 		if info.IsDir() {
+			log.Printf("walking into dir '%s'", info.Name())
 			return nil
 		}
 
@@ -231,6 +212,7 @@ func renderConfigs(outputVolumeDir, volumeDir, secretPath string) error {
 
 		savePath := filepath.Join(outputVolumeDir, rel)
 
+		log.Printf("write '%s' -> '%s'", path, savePath)
 		if err := os.MkdirAll(filepath.Dir(savePath), 0777); err != nil {
 			return fmt.Errorf("failed to mkdir for savepath: %v", err)
 		}
